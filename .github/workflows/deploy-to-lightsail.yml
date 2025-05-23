@@ -2,7 +2,8 @@ name: Deploy to AWS Lightsail
 
 on:
   push:
-    branches: [main]
+    branches: 
+      - main
   workflow_dispatch:
 
 jobs:
@@ -10,122 +11,43 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: \${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: \${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ap-northeast-1
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: \${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: \${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-northeast-1
 
-    - name: Test AWS connection
-      run: |
-        echo "Testing AWS connection..."
-        aws sts get-caller-identity
-        echo "AWS connection successful"
+      - name: Test AWS connection
+        run: |
+          echo "Testing AWS connection..."
+          aws sts get-caller-identity
 
-    - name: Check if service exists
-      id: check-service
-      run: |
-        echo "Checking if Lightsail service exists..."
-        if aws lightsail get-container-services --service-name streamlit-app --region ap-northeast-1 >/dev/null 2>&1; then
-          echo "exists=true" >> \$GITHUB_OUTPUT
-          echo "Service already exists"
-        else
-          echo "exists=false" >> \$GITHUB_OUTPUT
-          echo "Service does not exist - will create"
-        fi
-
-    - name: Create Lightsail container service
-      if: steps.check-service.outputs.exists == 'false'
-      run: |
-        echo "Creating Lightsail container service..."
-        aws lightsail create-container-service \
-          --service-name streamlit-app \
-          --power small \
-          --scale 1 \
-          --region ap-northeast-1
-        echo "Service creation initiated"
-
-    - name: Wait for service to be ready
-      if: steps.check-service.outputs.exists == 'false'
-      run: |
-        echo "Waiting for service to be ready..."
-        for i in {1..15}; do
-          sleep 30
-          SERVICE_STATE=\$(aws lightsail get-container-services \
-            --service-name streamlit-app \
-            --region ap-northeast-1 \
-            --query 'containerServices[0].state' \
-            --output text 2>/dev/null || echo "PENDING")
-          
-          echo "[\$i/15] Service state: \$SERVICE_STATE"
-          
-          if [ "\$SERVICE_STATE" = "READY" ]; then
-            echo "Service is ready!"
-            break
-          elif [ "\$SERVICE_STATE" = "FAILED" ]; then
-            echo "Service creation failed!"
-            exit 1
+      - name: Check if service exists
+        id: check-service
+        run: |
+          if aws lightsail get-container-services --service-name streamlit-app --region ap-northeast-1 >/dev/null 2>&1; then
+            echo "exists=true" >> \$GITHUB_OUTPUT
+          else
+            echo "exists=false" >> \$GITHUB_OUTPUT
           fi
-          
-          if [ \$i -eq 15 ]; then
-            echo "Timeout waiting for service"
-            exit 1
-          fi
-        done
 
-    - name: Build Docker image
-      run: |
-        echo "Building Docker image..."
-        docker build -t streamlit-app .
-        echo "Docker image built successfully"
+      - name: Create service if needed
+        if: steps.check-service.outputs.exists == 'false'
+        run: |
+          aws lightsail create-container-service --service-name streamlit-app --power small --scale 1 --region ap-northeast-1
+          sleep 60
 
-    - name: Push image to Lightsail
-      run: |
-        echo "Pushing image to Lightsail..."
-        aws lightsail push-container-image \
-          --service-name streamlit-app \
-          --label app \
-          --image streamlit-app \
-          --region ap-northeast-1
-        echo "Image pushed successfully"
+      - name: Build and deploy
+        run: |
+          docker build -t myapp .
+          aws lightsail push-container-image --service-name streamlit-app --label app --image myapp --region ap-northeast-1
+          aws lightsail create-container-service-deployment --service-name streamlit-app --region ap-northeast-1 --containers '{"app":{"image":":streamlit-app.app.'\$GITHUB_RUN_NUMBER'","ports":{"8501":"HTTP"}}}' --public-endpoint '{"containerName":"app","containerPort":8501}'
 
-    - name: Deploy to Lightsail
-      run: |
-        echo "Creating deployment..."
-        
-        aws lightsail create-container-service-deployment \
-          --service-name streamlit-app \
-          --region ap-northeast-1 \
-          --containers '{
-            "app": {
-              "image": ":streamlit-app.app.'\$GITHUB_RUN_NUMBER'",
-              "ports": {
-                "8501": "HTTP"
-              }
-            }
-          }' \
-          --public-endpoint '{
-            "containerName": "app",
-            "containerPort": 8501
-          }'
-        
-        echo "Deployment initiated"
-
-    - name: Get service URL
-      run: |
-        echo "Waiting for deployment..."
-        sleep 90
-        
-        SERVICE_INFO=\$(aws lightsail get-container-services \
-          --service-name streamlit-app \
-          --region ap-northeast-1)
-        
-        SERVICE_URL=\$(echo "\$SERVICE_INFO" | jq -r '.containerServices[0].url // "Not available"')
-        SERVICE_STATE=\$(echo "\$SERVICE_INFO" | jq -r '.containerServices[0].state // "Unknown"')
-        
-        echo "Service URL: \$SERVICE_URL"
-        echo "Service State: \$SERVICE_STATE"
+      - name: Get service URL
+        run: |
+          sleep 60
+          aws lightsail get-container-services --service-name streamlit-app --region ap-northeast-1 --query 'containerServices[0].url' --output text
