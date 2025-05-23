@@ -2,7 +2,7 @@ name: Deploy to AWS Lightsail
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
 
 env:
@@ -24,19 +24,17 @@ jobs:
       with:
         aws-access-key-id: \${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: \${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: \${{ env.AWS_REGION }}
+        aws-region: ap-northeast-1
 
     - name: Check if service exists
       id: check-service
       run: |
-        if aws lightsail get-container-services \
-           --service-name \${{ env.LIGHTSAIL_SERVICE_NAME }} \
-           --region \${{ env.AWS_REGION }} >/dev/null 2>&1; then
+        if aws lightsail get-container-services --service-name streamlit-app --region ap-northeast-1 >/dev/null 2>&1; then
           echo "exists=true" >> \$GITHUB_OUTPUT
-          echo "✅ Service already exists"
+          echo "Service already exists"
         else
           echo "exists=false" >> \$GITHUB_OUTPUT
-          echo "❌ Service does not exist"
+          echo "Service does not exist"
         fi
 
     - name: Create Lightsail container service
@@ -44,10 +42,10 @@ jobs:
       run: |
         echo "Creating Lightsail container service..."
         aws lightsail create-container-service \
-          --service-name \${{ env.LIGHTSAIL_SERVICE_NAME }} \
-          --power \${{ env.SERVICE_POWER }} \
-          --scale \${{ env.SERVICE_SCALE }} \
-          --region \${{ env.AWS_REGION }}
+          --service-name streamlit-app \
+          --power small \
+          --scale 1 \
+          --region ap-northeast-1
         echo "Service creation initiated"
 
     - name: Wait for service to be ready
@@ -57,23 +55,23 @@ jobs:
         for i in {1..20}; do
           sleep 30
           SERVICE_STATE=\$(aws lightsail get-container-services \
-            --service-name \${{ env.LIGHTSAIL_SERVICE_NAME }} \
-            --region \${{ env.AWS_REGION }} \
+            --service-name streamlit-app \
+            --region ap-northeast-1 \
             --query 'containerServices[0].state' \
             --output text 2>/dev/null || echo "PENDING")
           
           echo "Attempt \$i/20 - Service state: \$SERVICE_STATE"
           
           if [ "\$SERVICE_STATE" = "READY" ]; then
-            echo "✅ Service is ready!"
+            echo "Service is ready!"
             break
           elif [ "\$SERVICE_STATE" = "FAILED" ]; then
-            echo "❌ Service creation failed!"
+            echo "Service creation failed!"
             exit 1
           fi
           
           if [ \$i -eq 20 ]; then
-            echo "⏰ Timeout waiting for service to be ready"
+            echo "Timeout waiting for service to be ready"
             exit 1
           fi
         done
@@ -81,51 +79,42 @@ jobs:
     - name: Build Docker image
       run: |
         echo "Building Docker image..."
-        docker build -t streamlit-app:\${{ github.sha }} .
+        docker build -t streamlit-app .
         echo "Docker image built successfully"
 
     - name: Push image to Lightsail
       run: |
         echo "Pushing image to Lightsail..."
         aws lightsail push-container-image \
-          --service-name \${{ env.LIGHTSAIL_SERVICE_NAME }} \
+          --service-name streamlit-app \
           --label app \
-          --image streamlit-app:\${{ github.sha }} \
-          --region \${{ env.AWS_REGION }}
+          --image streamlit-app \
+          --region ap-northeast-1
         echo "Image pushed successfully"
 
     - name: Deploy to Lightsail
       run: |
-        echo "Creating deployment configuration..."
-        
-        cat > deployment.json << EOF
-        {
-          "app": {
-            "image": ":\${{ env.LIGHTSAIL_SERVICE_NAME }}.app.\${{ github.run_number }}",
-            "ports": {
-              "8501": "HTTP"
-            },
-            "environment": {
-              "STREAMLIT_SERVER_PORT": "8501",
-              "STREAMLIT_SERVER_ADDRESS": "0.0.0.0"
-            }
-          }
-        }
-        EOF
-
-        cat > public-endpoint.json << EOF
-        {
-          "containerName": "app",
-          "containerPort": 8501
-        }
-        EOF
-
         echo "Deploying to Lightsail..."
+        
         aws lightsail create-container-service-deployment \
-          --service-name \${{ env.LIGHTSAIL_SERVICE_NAME }} \
-          --containers file://deployment.json \
-          --public-endpoint file://public-endpoint.json \
-          --region \${{ env.AWS_REGION }}
+          --service-name streamlit-app \
+          --region ap-northeast-1 \
+          --containers '{
+            "app": {
+              "image": ":streamlit-app.app.'\$GITHUB_RUN_NUMBER'",
+              "ports": {
+                "8501": "HTTP"
+              },
+              "environment": {
+                "STREAMLIT_SERVER_PORT": "8501",
+                "STREAMLIT_SERVER_ADDRESS": "0.0.0.0"
+              }
+            }
+          }' \
+          --public-endpoint '{
+            "containerName": "app",
+            "containerPort": 8501
+          }'
         
         echo "Deployment initiated successfully"
 
@@ -135,17 +124,17 @@ jobs:
         sleep 120
         
         SERVICE_INFO=\$(aws lightsail get-container-services \
-          --service-name \${{ env.LIGHTSAIL_SERVICE_NAME }} \
-          --region \${{ env.AWS_REGION }})
+          --service-name streamlit-app \
+          --region ap-northeast-1)
         
         SERVICE_URL=\$(echo "\$SERVICE_INFO" | jq -r '.containerServices[0].url // "Not available"')
         SERVICE_STATE=\$(echo "\$SERVICE_INFO" | jq -r '.containerServices[0].state // "Unknown"')
         
-        echo "🌐 Service URL: \$SERVICE_URL"
-        echo "📊 Service State: \$SERVICE_STATE"
+        echo "Service URL: \$SERVICE_URL"
+        echo "Service State: \$SERVICE_STATE"
         
         if [ "\$SERVICE_STATE" = "RUNNING" ]; then
-          echo "✅ Deployment completed successfully!"
+          echo "Deployment completed successfully!"
         else
-          echo "⚠️ Current service state: \$SERVICE_STATE"
+          echo "Current service state: \$SERVICE_STATE"
         fi
