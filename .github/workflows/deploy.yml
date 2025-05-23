@@ -176,10 +176,13 @@ jobs:
           done
         fi
         
-        echo "Pushing Docker image to Lightsail..."
+        # GitHub SHAの短縮版（最初の8文字）を使用
+        SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-8)
+        
+        echo "Pushing Docker image to Lightsail with label: app-${SHORT_SHA}"
         aws lightsail push-container-image \
           --service-name ${{ env.SERVICE_NAME }} \
-          --label ${{ env.SERVICE_NAME }}-${{ github.sha }} \
+          --label "app-${SHORT_SHA}" \
           --image ${{ env.SERVICE_NAME }}:${{ env.IMAGE_TAG }}
     
     - name: Get Lightsail image name
