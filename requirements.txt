@@ -1,0 +1,8 @@
+streamlit
+pulp
+pandas
+numpy
+matplotlib
+networkx
+altair
+scikit-learn
