@@ -26,19 +26,24 @@ jobs:
 
     - name: Build Docker image
       run: |
+        echo "Building Docker image..."
         docker build -t streamlit-app:\${{ github.sha }} .
+        echo "Docker image built successfully"
 
-    - name: Deploy to Lightsail
+    - name: Push image to Lightsail
       run: |
-        # 一時的なイメージファイルを作成
-        docker save streamlit-app:\${{ github.sha }} > app-image.tar
-        
-        # Lightsailにイメージをアップロード
+        echo "Pushing image to Lightsail..."
         aws lightsail push-container-image \
           --service-name \${{ env.LIGHTSAIL_SERVICE_NAME }} \
           --label app \
-          --image streamlit-app:\${{ github.sha }}
+          --image streamlit-app:\${{ github.sha }} \
+          --region \${{ env.AWS_REGION }}
+        echo "Image pushed successfully"
 
+    - name: Deploy to Lightsail
+      run: |
+        echo "Creating deployment configuration..."
+        
         # デプロイメント設定を作成
         cat > deployment.json << EOF
         {
@@ -48,7 +53,8 @@ jobs:
               "8501": "HTTP"
             },
             "environment": {
-              "STREAMLIT_SERVER_PORT": "8501"
+              "STREAMLIT_SERVER_PORT": "8501",
+              "STREAMLIT_SERVER_ADDRESS": "0.0.0.0"
             }
           }
         }
@@ -62,17 +68,33 @@ jobs:
         }
         EOF
 
-        # デプロイメント実行
+        echo "Deploying to Lightsail..."
         aws lightsail create-container-service-deployment \
           --service-name \${{ env.LIGHTSAIL_SERVICE_NAME }} \
           --containers file://deployment.json \
-          --public-endpoint file://public-endpoint.json
+          --public-endpoint file://public-endpoint.json \
+          --region \${{ env.AWS_REGION }}
+        
+        echo "Deployment initiated successfully"
 
     - name: Wait for deployment
       run: |
         echo "Waiting for deployment to complete..."
-        sleep 120
+        sleep 90
         
         # サービス情報を取得
-        aws lightsail get-container-services \
-          --service-name \${{ env.LIGHTSAIL_SERVICE_NAME }}
+        SERVICE_INFO=\$(aws lightsail get-container-services \
+          --service-name \${{ env.LIGHTSAIL_SERVICE_NAME }} \
+          --region \${{ env.AWS_REGION }})
+        
+        SERVICE_URL=\$(echo "\$SERVICE_INFO" | jq -r '.containerServices[0].url // "Not available"')
+        SERVICE_STATE=\$(echo "\$SERVICE_INFO" | jq -r '.containerServices[0].state // "Unknown"')
+        
+        echo "Service URL: \$SERVICE_URL"
+        echo "Service State: \$SERVICE_STATE"
+        
+        if [ "\$SERVICE_STATE" = "RUNNING" ]; then
+          echo "✅ Deployment completed successfully!"
+        else
+          echo "⚠️ Service state: \$SERVICE_STATE"
+        fi
