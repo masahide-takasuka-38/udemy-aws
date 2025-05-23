@@ -8,6 +8,8 @@ on:
 env:
   AWS_REGION: ap-northeast-1
   LIGHTSAIL_SERVICE_NAME: streamlit-app
+  SERVICE_POWER: small
+  SERVICE_SCALE: 1
 
 jobs:
   deploy:
@@ -23,6 +25,58 @@ jobs:
         aws-access-key-id: \${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: \${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: \${{ env.AWS_REGION }}
+
+    - name: Check if service exists
+      id: check-service
+      run: |
+        if aws lightsail get-container-services \
+           --service-name \${{ env.LIGHTSAIL_SERVICE_NAME }} \
+           --region \${{ env.AWS_REGION }} >/dev/null 2>&1; then
+          echo "exists=true" >> \$GITHUB_OUTPUT
+          echo "✅ Service already exists"
+        else
+          echo "exists=false" >> \$GITHUB_OUTPUT
+          echo "❌ Service does not exist"
+        fi
+
+    - name: Create Lightsail container service
+      if: steps.check-service.outputs.exists == 'false'
+      run: |
+        echo "Creating Lightsail container service..."
+        aws lightsail create-container-service \
+          --service-name \${{ env.LIGHTSAIL_SERVICE_NAME }} \
+          --power \${{ env.SERVICE_POWER }} \
+          --scale \${{ env.SERVICE_SCALE }} \
+          --region \${{ env.AWS_REGION }}
+        echo "Service creation initiated"
+
+    - name: Wait for service to be ready
+      if: steps.check-service.outputs.exists == 'false'
+      run: |
+        echo "Waiting for service to be ready..."
+        for i in {1..20}; do
+          sleep 30
+          SERVICE_STATE=\$(aws lightsail get-container-services \
+            --service-name \${{ env.LIGHTSAIL_SERVICE_NAME }} \
+            --region \${{ env.AWS_REGION }} \
+            --query 'containerServices[0].state' \
+            --output text 2>/dev/null || echo "PENDING")
+          
+          echo "Attempt \$i/20 - Service state: \$SERVICE_STATE"
+          
+          if [ "\$SERVICE_STATE" = "READY" ]; then
+            echo "✅ Service is ready!"
+            break
+          elif [ "\$SERVICE_STATE" = "FAILED" ]; then
+            echo "❌ Service creation failed!"
+            exit 1
+          fi
+          
+          if [ \$i -eq 20 ]; then
+            echo "⏰ Timeout waiting for service to be ready"
+            exit 1
+          fi
+        done
 
     - name: Build Docker image
       run: |
@@ -44,7 +98,6 @@ jobs:
       run: |
         echo "Creating deployment configuration..."
         
-        # デプロイメント設定を作成
         cat > deployment.json << EOF
         {
           "app": {
@@ -60,7 +113,6 @@ jobs:
         }
         EOF
 
-        # パブリックエンドポイント設定
         cat > public-endpoint.json << EOF
         {
           "containerName": "app",
@@ -80,9 +132,8 @@ jobs:
     - name: Wait for deployment
       run: |
         echo "Waiting for deployment to complete..."
-        sleep 90
+        sleep 120
         
-        # サービス情報を取得
         SERVICE_INFO=\$(aws lightsail get-container-services \
           --service-name \${{ env.LIGHTSAIL_SERVICE_NAME }} \
           --region \${{ env.AWS_REGION }})
@@ -90,11 +141,11 @@ jobs:
         SERVICE_URL=\$(echo "\$SERVICE_INFO" | jq -r '.containerServices[0].url // "Not available"')
         SERVICE_STATE=\$(echo "\$SERVICE_INFO" | jq -r '.containerServices[0].state // "Unknown"')
         
-        echo "Service URL: \$SERVICE_URL"
-        echo "Service State: \$SERVICE_STATE"
+        echo "🌐 Service URL: \$SERVICE_URL"
+        echo "📊 Service State: \$SERVICE_STATE"
         
         if [ "\$SERVICE_STATE" = "RUNNING" ]; then
           echo "✅ Deployment completed successfully!"
         else
-          echo "⚠️ Service state: \$SERVICE_STATE"
+          echo "⚠️ Current service state: \$SERVICE_STATE"
         fi
