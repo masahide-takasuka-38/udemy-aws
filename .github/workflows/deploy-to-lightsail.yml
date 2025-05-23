@@ -60,22 +60,33 @@ jobs:
         
         # コンテナサービスがREADY状態になるまで待機
         echo "Waiting for container service to be ready..."
-        for i in {1..30}; do
+        for i in {1..40}; do
           SERVICE_STATE=$(aws lightsail get-container-services \
             --service-name ${{ env.SERVICE_NAME }} \
             --query "containerServices[0].state" \
             --output text)
           
-          echo "Service state: $SERVICE_STATE"
+          echo "Service state: $SERVICE_STATE ($i/40)"
           
           if [ "$SERVICE_STATE" = "READY" ]; then
             echo "Container service is ready!"
             break
-          elif [ "$SERVICE_STATE" = "CREATING" ] || [ "$SERVICE_STATE" = "DEPLOYING" ]; then
-            echo "Waiting... ($i/30)"
-            sleep 20
+          elif [ "$SERVICE_STATE" = "PENDING" ] || [ "$SERVICE_STATE" = "CREATING" ] || [ "$SERVICE_STATE" = "DEPLOYING" ]; then
+            echo "Service is still being created..."
+            sleep 30
+          elif [ "$SERVICE_STATE" = "DISABLED" ]; then
+            echo "Service is disabled. Enabling..."
+            aws lightsail update-container-service \
+              --service-name ${{ env.SERVICE_NAME }} \
+              --no-is-disabled
+            sleep 30
           else
-            echo "Unexpected service state: $SERVICE_STATE"
+            echo "Error: Unexpected service state: $SERVICE_STATE"
+            exit 1
+          fi
+          
+          if [ $i -eq 40 ]; then
+            echo "Timeout waiting for service to be ready"
             exit 1
           fi
         done
@@ -83,6 +94,36 @@ jobs:
     - name: Update container service if needed
       if: steps.check-service.outputs.exists == 'true'
       run: |
+        # 既存のサービスの状態を確認
+        SERVICE_STATE=$(aws lightsail get-container-services \
+          --service-name ${{ env.SERVICE_NAME }} \
+          --query "containerServices[0].state" \
+          --output text)
+        
+        echo "Current service state: $SERVICE_STATE"
+        
+        # DISABLEDの場合は有効化
+        if [ "$SERVICE_STATE" = "DISABLED" ]; then
+          echo "Enabling container service..."
+          aws lightsail update-container-service \
+            --service-name ${{ env.SERVICE_NAME }} \
+            --no-is-disabled
+          
+          # 有効化を待つ
+          for i in {1..20}; do
+            SERVICE_STATE=$(aws lightsail get-container-services \
+              --service-name ${{ env.SERVICE_NAME }} \
+              --query "containerServices[0].state" \
+              --output text)
+            
+            if [ "$SERVICE_STATE" = "READY" ]; then
+              break
+            fi
+            echo "Waiting for service to be enabled... ($i/20)"
+            sleep 10
+          done
+        fi
+        
         # 必要に応じてコンテナサービスのスペックを更新
         CURRENT_POWER=$(aws lightsail get-container-services \
           --service-name ${{ env.SERVICE_NAME }} \
@@ -113,6 +154,29 @@ jobs:
     
     - name: Push Docker image to Lightsail
       run: |
+        # サービスがREADY状態であることを確認
+        SERVICE_STATE=$(aws lightsail get-container-services \
+          --service-name ${{ env.SERVICE_NAME }} \
+          --query "containerServices[0].state" \
+          --output text)
+        
+        if [ "$SERVICE_STATE" != "READY" ]; then
+          echo "Waiting for service to be ready before pushing image..."
+          for i in {1..10}; do
+            SERVICE_STATE=$(aws lightsail get-container-services \
+              --service-name ${{ env.SERVICE_NAME }} \
+              --query "containerServices[0].state" \
+              --output text)
+            
+            if [ "$SERVICE_STATE" = "READY" ]; then
+              break
+            fi
+            echo "Current state: $SERVICE_STATE, waiting... ($i/10)"
+            sleep 30
+          done
+        fi
+        
+        echo "Pushing Docker image to Lightsail..."
         aws lightsail push-container-image \
           --service-name ${{ env.SERVICE_NAME }} \
           --label ${{ env.SERVICE_NAME }}-${{ github.sha }} \
@@ -186,10 +250,19 @@ jobs:
             break
           elif [ "$DEPLOYMENT_STATE" = "FAILED" ]; then
             echo "Deployment failed!"
+            
+            # エラーの詳細を表示
+            aws lightsail get-container-service-deployments \
+              --service-name ${{ env.SERVICE_NAME }} \
+              --query "deployments[0]"
             exit 1
+          elif [ "$DEPLOYMENT_STATE" = "ACTIVATING" ] || [ "$DEPLOYMENT_STATE" = "INACTIVE" ]; then
+            echo "Deployment in progress..."
           else
-            sleep 10
+            echo "Current deployment state: $DEPLOYMENT_STATE"
           fi
+          
+          sleep 10
         done
     
     - name: Get service URL
