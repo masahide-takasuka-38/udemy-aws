@@ -1,23 +1,18 @@
 FROM python:3.9-slim
 
-# •K—v‚ÈƒVƒXƒeƒ€ƒpƒbƒP[ƒW‚ğƒCƒ“ƒXƒg[ƒ‹
-RUN apt-get update && apt-get install -y \
-    git \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# ì‹ÆƒfƒBƒŒƒNƒgƒŠ‚ğİ’è
 WORKDIR /app
 
-# Python‚ÌˆË‘¶ŠÖŒW‚ğƒCƒ“ƒXƒg[ƒ‹
+# ä¾å­˜é–¢ä¿‚ã‚’ã‚¤ãƒ³ã‚¹ãƒˆãƒ¼ãƒ«
 COPY requirements.txt .
-RUN pip install -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
-# ƒAƒvƒŠƒP[ƒVƒ‡ƒ“ƒtƒ@ƒCƒ‹‚ğƒRƒs[
-COPY . .
+# ã‚¢ãƒ—ãƒªã‚±ãƒ¼ã‚·ãƒ§ãƒ³ãƒ•ã‚¡ã‚¤ãƒ«ã‚’ã‚³ãƒ”ãƒ¼
+COPY app.py .
 
-# ƒ|[ƒg‚ğŒöŠJ
+# Streamlitã®è¨­å®š
+RUN mkdir -p /root/.streamlit
+RUN echo '[server]\nheadless = true\nport = 8501\naddress = "0.0.0.0"\n' > /root/.streamlit/config.toml
+
 EXPOSE 8501
 
-# StreamlitƒAƒvƒŠ‚ğ‹N“®
-CMD ["streamlit", "run", "app.py", "--server.address", "0.0.0.0"]
+CMD ["streamlit", "run", "app.py"]
