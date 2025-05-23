@@ -1,0 +1,152 @@
+name: Setup Lightsail Container Service
+
+on:
+  workflow_dispatch:
+    inputs:
+      service_name:
+        description: 'Container service name'
+        required: true
+        default: 'github-streamlit-app'
+      power:
+        description: 'Container power'
+        required: true
+        default: 'small'
+        type: choice
+        options:
+        - nano
+        - micro
+        - small
+        - medium
+        - large
+      scale:
+        description: 'Number of containers'
+        required: true
+        default: '1'
+        type: choice
+        options:
+        - '1'
+        - '2'
+        - '3'
+
+env:
+  AWS_REGION: ap-northeast-1
+
+jobs:
+  setup:
+    name: Setup Container Service
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: ☁️ Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: \${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: \${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: \${{ env.AWS_REGION }}
+
+    - name: 🔍 Check if service already exists
+      id: check-service
+      continue-on-error: true
+      run: |
+        echo "Checking if service '\${{ github.event.inputs.service_name }}' already exists..."
+        
+        if aws lightsail get-container-services \
+           --service-name "\${{ github.event.inputs.service_name }}" \
+           --region "\${{ env.AWS_REGION }}" > /dev/null 2>&1; then
+          echo "exists=true" >> "\$GITHUB_OUTPUT"
+          echo "⚠️ Service '\${{ github.event.inputs.service_name }}' already exists!"
+        else
+          echo "exists=false" >> "\$GITHUB_OUTPUT"
+          echo "✅ Service '\${{ github.event.inputs.service_name }}' does not exist. Proceeding with creation."
+        fi
+
+    - name: 🚀 Create Lightsail container service
+      if: steps.check-service.outputs.exists == 'false'
+      run: |
+        echo "Creating Lightsail container service..."
+        echo "Service Name: \${{ github.event.inputs.service_name }}"
+        echo "Power: \${{ github.event.inputs.power }}"
+        echo "Scale: \${{ github.event.inputs.scale }}"
+        echo "Region: \${{ env.AWS_REGION }}"
+        
+        aws lightsail create-container-service \
+          --service-name "\${{ github.event.inputs.service_name }}" \
+          --power "\${{ github.event.inputs.power }}" \
+          --scale "\${{ github.event.inputs.scale }}" \
+          --region "\${{ env.AWS_REGION }}"
+        
+        echo "✅ Container service creation initiated!"
+
+    - name: ⏳ Wait for service to be ready
+      run: |
+        echo "Waiting for service to be ready..."
+        
+        # 最大10分待機（20回 × 30秒）
+        for i in {1..20}; do
+          sleep 30
+          
+          echo "Checking service status (attempt \$i/20)..."
+          
+          SERVICE_STATE=\$(aws lightsail get-container-services \
+            --service-name "\${{ github.event.inputs.service_name }}" \
+            --region "\${{ env.AWS_REGION }}" \
+            --query 'containerServices[0].state' \
+            --output text 2>/dev/null || echo "PENDING")
+          
+          echo "Current state: \$SERVICE_STATE"
+          
+          case "\$SERVICE_STATE" in
+            "READY")
+              echo "✅ Service is ready!"
+              break
+              ;;
+            "FAILED")
+              echo "❌ Service creation failed!"
+              
+              # エラー詳細を取得
+              echo "Getting error details..."
+              aws lightsail get-container-services \
+                --service-name "\${{ github.event.inputs.service_name }}" \
+                --region "\${{ env.AWS_REGION }}"
+              
+              exit 1
+              ;;
+            "PENDING"|"RUNNING")
+              echo "⏳ Service is still initializing... (\$SERVICE_STATE)"
+              ;;
+            *)
+              echo "🔄 Current state: \$SERVICE_STATE"
+              ;;
+          esac
+          
+          if [ \$i -eq 20 ]; then
+            echo "⏰ Setup timeout after 10 minutes"
+            echo "Final state: \$SERVICE_STATE"
+            exit 1
+          fi
+        done
+
+    - name: 📊 Display service information
+      run: |
+        echo "📊 Service Information:"
+        
+        SERVICE_INFO=\$(aws lightsail get-container-services \
+          --service-name "\${{ github.event.inputs.service_name }}" \
+          --region "\${{ env.AWS_REGION }}")
+        
+        echo "\$SERVICE_INFO" | jq '.'
+        
+        # サマリー情報を抽出
+        SERVICE_NAME=\$(echo "\$SERVICE_INFO" | jq -r '.containerServices[0].containerServiceName')
+        SERVICE_STATE=\$(echo "\$SERVICE_INFO" | jq -r '.containerServices[0].state')
+        POWER=\$(echo "\$SERVICE_INFO" | jq -r '.containerServices[0].power')
+        SCALE=\$(echo "\$SERVICE_INFO" | jq -r '.containerServices[0].scale')
+        
+        echo ""
+        echo "✅ Setup Summary:"
+        echo "📛 Service Name: \$SERVICE_NAME"
+        echo "📊 State: \$SERVICE_STATE"
+        echo "💪 Power: \$POWER"
+        echo "📏 Scale: \$SCALE"
+        echo ""
+        echo "🚀 You can now deploy your application using the main deployment workflow!"
