@@ -24,7 +24,7 @@
 
 ## デプロイ設定
 
-GitHub ActionsとAWS Lightsailを使用した自動デプロイ（ECR不使用、直接デプロイ）。
+GitHub ActionsとAWS Lightsailを使用した自動デプロイ。
 
 ### 前提条件
 
